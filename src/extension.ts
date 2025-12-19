@@ -69,16 +69,41 @@ async function fetchLastEvent(context: vscode.ExtensionContext, force: boolean =
 		console.log('[CURSOR-METER] Fetching last usage event...');
 		const usageEvents = await fetchUsageEvents(token, undefined, undefined, 1);
 		
+		// Validate response structure
+		if (!usageEvents || !Array.isArray(usageEvents.usageEventsDisplay)) {
+			console.error('[CURSOR-METER] Invalid usage events response structure');
+			const errorTooltip = new vscode.MarkdownString('### Cursor Usage Details\n\n**Error:** Refresh Failed');
+			errorTooltip.isTrusted = true;
+			if (statusBarItem) {
+				statusBarItem.tooltip = errorTooltip;
+			}
+			return;
+		}
+		
 		if (usageEvents.usageEventsDisplay.length > 0) {
-			cachedLastEvent = usageEvents.usageEventsDisplay[0];
-			lastEventFetchTime = now;
+			const event = usageEvents.usageEventsDisplay[0];
+			// Basic validation
+			if (!event || !event.tokenUsage || typeof event.tokenUsage.totalCents !== 'number') {
+				console.error('[CURSOR-METER] Invalid usage event structure');
+				const errorTooltip = new vscode.MarkdownString('### Cursor Usage Details\n\n**Error:** Refresh Failed');
+				errorTooltip.isTrusted = true;
+				if (statusBarItem) {
+					statusBarItem.tooltip = errorTooltip;
+				}
+				return;
+			}
 			
-			// Update tooltip
+			cachedLastEvent = event;
+			lastEventFetchTime = now;
 			updateTooltip();
 		}
 	} catch (error) {
-		console.warn('[CURSOR-METER] Failed to fetch last usage event:', error);
-		// Don't update tooltip on error, keep cached value
+		console.error('[CURSOR-METER] Failed to fetch last usage event:', error);
+		const errorTooltip = new vscode.MarkdownString('### Cursor Usage Details\n\n**Error:** Refresh Failed');
+		errorTooltip.isTrusted = true;
+		if (statusBarItem) {
+			statusBarItem.tooltip = errorTooltip;
+		}
 	}
 }
 
@@ -167,6 +192,10 @@ function updateStatusBar(used: number, limit: number): void {
 function setStatusBarError(message: string): void {
 	const statusBar = createStatusBarItem();
 	statusBar.text = `$(error) Cursor Meter: ${message}`;
+	// Set error tooltip
+	const errorTooltip = new vscode.MarkdownString(`### Cursor Usage Details\n\n**Error:** ${message}`);
+	errorTooltip.isTrusted = true;
+	statusBar.tooltip = errorTooltip;
 	statusBar.show();
 }
 
@@ -184,7 +213,20 @@ async function refreshUsage(context: vscode.ExtensionContext): Promise<void> {
 		console.log('[CURSOR-METER] Fetching usage summary...');
 		const usageSummary = await fetchUsageSummary(token);
 
+		// Validate response structure
+		if (!usageSummary || !usageSummary.individualUsage || !usageSummary.individualUsage.plan) {
+			console.error('[CURSOR-METER] Invalid API response structure');
+			setStatusBarError('Refresh Failed');
+			return;
+		}
+
 		const plan = usageSummary.individualUsage.plan;
+		if (typeof plan.enabled !== 'boolean' || typeof plan.used !== 'number' || typeof plan.limit !== 'number') {
+			console.error('[CURSOR-METER] Invalid plan data structure');
+			setStatusBarError('Refresh Failed');
+			return;
+		}
+
 		if (plan.enabled) {
 			updateStatusBar(plan.used, plan.limit);
 			console.log(`[CURSOR-METER] Usage: ${plan.used}/${plan.limit} (${((plan.used / plan.limit) * 100).toFixed(1)}%)`);
@@ -193,7 +235,7 @@ async function refreshUsage(context: vscode.ExtensionContext): Promise<void> {
 		}
 	} catch (error) {
 		console.error('[CURSOR-METER] Failed to refresh usage:', error);
-		setStatusBarError('Refresh failed');
+		setStatusBarError('Refresh Failed');
 		
 		// If it's an auth error, clear token and prompt again
 		if (error instanceof Error && error.message.includes('401')) {
