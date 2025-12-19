@@ -10,8 +10,10 @@ Cursor's Usage Summary only displays usage in rounded percentages. This extensio
 
 ## Features
 
-Shows Cursor usage as a status bar: 
+Shows Cursor usage as a status bar item:
 ex. `Cursor: 595/40000 (1.5%)` where 595 is $5.95
+
+Hover over the status bar item to see a cost breakdown of your last request.
 
 ## Installation
 
