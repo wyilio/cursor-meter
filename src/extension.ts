@@ -175,10 +175,19 @@ function createUsageTooltip(event: UsageEvent | undefined): vscode.MarkdownStrin
 /**
  * Updates the status bar with usage information
  */
-function updateStatusBar(used: number, limit: number): void {
+function updateStatusBar(used: number, limit: number, onDemandUsed?: number, onDemandLimit?: number): void {
 	const statusBar = createStatusBarItem();
 	const percentage = limit > 0 ? ((used / limit) * 100).toFixed(1) : '0.0';
-	statusBar.text = `Cursor Meter: ${used}/${limit} (${percentage}%)`;
+	
+	let statusText = `Cursor Meter: ${used}/${limit} (${percentage}%)`;
+	
+	// Add on-demand usage if enabled
+	if (onDemandUsed !== undefined && onDemandLimit !== undefined) {
+		const onDemandPercentage = onDemandLimit > 0 ? ((onDemandUsed / onDemandLimit) * 100).toFixed(1) : '0.0';
+		statusText += ` | On-Demand: ${onDemandUsed}/${onDemandLimit} (${onDemandPercentage}%)`;
+	}
+	
+	statusBar.text = statusText;
 	
 	// Use cached event if available, otherwise show placeholder
 	statusBar.tooltip = createUsageTooltip(cachedLastEvent);
@@ -227,9 +236,27 @@ async function refreshUsage(context: vscode.ExtensionContext): Promise<void> {
 			return;
 		}
 
+		// Check on-demand usage
+		const onDemand = usageSummary.individualUsage.onDemand;
+		const hasOnDemand = onDemand && 
+			typeof onDemand.enabled === 'boolean' && 
+			typeof onDemand.used === 'number' && 
+			typeof onDemand.limit === 'number' &&
+			onDemand.enabled;
+
 		if (plan.enabled) {
-			updateStatusBar(plan.used, plan.limit);
-			console.log(`[CURSOR-METER] Usage: ${plan.used}/${plan.limit} (${((plan.used / plan.limit) * 100).toFixed(1)}%)`);
+			// Show plan usage, and on-demand if enabled
+			if (hasOnDemand) {
+				updateStatusBar(plan.used, plan.limit, onDemand.used, onDemand.limit);
+				console.log(`[CURSOR-METER] Usage: ${plan.used}/${plan.limit} (${((plan.used / plan.limit) * 100).toFixed(1)}%) | On-Demand: ${onDemand.used}/${onDemand.limit} (${((onDemand.used / onDemand.limit) * 100).toFixed(1)}%)`);
+			} else {
+				updateStatusBar(plan.used, plan.limit);
+				console.log(`[CURSOR-METER] Usage: ${plan.used}/${plan.limit} (${((plan.used / plan.limit) * 100).toFixed(1)}%)`);
+			}
+		} else if (hasOnDemand) {
+			// Plan disabled but on-demand enabled - show only on-demand
+			updateStatusBar(onDemand.used, onDemand.limit);
+			console.log(`[CURSOR-METER] On-Demand Usage: ${onDemand.used}/${onDemand.limit} (${((onDemand.used / onDemand.limit) * 100).toFixed(1)}%)`);
 		} else {
 			setStatusBarError('Plan disabled');
 		}
