@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
-import { fetchUsageSummary } from './api';
+import { fetchUsageSummary, fetchUsageEvents } from './api';
+import { UsageEvent } from './types';
 
 const TOKEN_STORAGE_KEY = 'cursor.workosToken';
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
 let debounceTimer: NodeJS.Timeout | undefined;
+let cachedLastEvent: UsageEvent | undefined;
+let lastEventFetchTime: number = 0;
+const EVENT_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Prompts the user to enter their WorkOS token and stores it securely
@@ -45,15 +49,102 @@ async function getToken(context: vscode.ExtensionContext): Promise<string | unde
 }
 
 /**
+ * Fetches the last usage event (lazy loading)
+ * Only fetches after Cursor requests or when cache is stale
+ */
+async function fetchLastEvent(context: vscode.ExtensionContext, force: boolean = false): Promise<void> {
+	const now = Date.now();
+	
+	// Use cache if it's still fresh (less than 5 minutes old) and not forcing
+	if (!force && cachedLastEvent && (now - lastEventFetchTime) < EVENT_CACHE_DURATION) {
+		return;
+	}
+	
+	try {
+		const token = await getToken(context);
+		if (!token) {
+			return;
+		}
+		
+		console.log('[CURSOR-METER] Fetching last usage event...');
+		const usageEvents = await fetchUsageEvents(token, undefined, undefined, 1);
+		
+		if (usageEvents.usageEventsDisplay.length > 0) {
+			cachedLastEvent = usageEvents.usageEventsDisplay[0];
+			lastEventFetchTime = now;
+			
+			// Update tooltip
+			updateTooltip();
+		}
+	} catch (error) {
+		console.warn('[CURSOR-METER] Failed to fetch last usage event:', error);
+		// Don't update tooltip on error, keep cached value
+	}
+}
+
+/**
+ * Updates the tooltip with cached or placeholder content
+ */
+function updateTooltip(): void {
+	if (statusBarItem) {
+		statusBarItem.tooltip = createUsageTooltip(cachedLastEvent);
+	}
+}
+
+/**
  * Creates or updates the status bar item
  */
 function createStatusBarItem(): vscode.StatusBarItem {
 	if (!statusBarItem) {
 		statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 		statusBarItem.command = 'cursor-meter.refresh';
-		statusBarItem.tooltip = 'Click to refresh Cursor usage';
+		updateTooltip();
 	}
 	return statusBarItem;
+}
+
+/**
+ * Creates a markdown tooltip with the last usage event details
+ */
+function createUsageTooltip(event: UsageEvent | undefined): vscode.MarkdownString {
+	const markdown = new vscode.MarkdownString();
+	markdown.isTrusted = true;
+	
+	if (!event) {
+		markdown.appendMarkdown('### Cursor Usage Details\n\n');
+		markdown.appendMarkdown('Click to refresh and load usage details.');
+		return markdown;
+	}
+	
+	const totalCost = event.requestsCosts + event.tokenUsage.totalCents;
+	const timestamp = formatTimestamp(event.timestamp);
+	
+	markdown.appendMarkdown('### Last Request\n\n');
+	markdown.appendMarkdown(`**${event.model}**\n\n`);
+	markdown.appendMarkdown(`📅 ${timestamp}\n\n`);
+	markdown.appendMarkdown(`**Cost Breakdown:**\n`);
+	markdown.appendMarkdown(`- Base Request: \`${formatCents(event.requestsCosts)}\`\n`);
+	markdown.appendMarkdown(`- Token Usage: \`${formatCents(event.tokenUsage.totalCents)}\`\n`);
+	markdown.appendMarkdown(`- **Total: \`${formatCents(totalCost)}\`**\n\n`);
+	
+	markdown.appendMarkdown(`**Token Usage:**\n`);
+	if (event.tokenUsage.inputTokens !== undefined) {
+		markdown.appendMarkdown(`- Input: \`${formatTokens(event.tokenUsage.inputTokens)}\`\n`);
+	}
+	if (event.tokenUsage.outputTokens !== undefined) {
+		markdown.appendMarkdown(`- Output: \`${formatTokens(event.tokenUsage.outputTokens)}\`\n`);
+	}
+	if (event.tokenUsage.cacheWriteTokens !== undefined) {
+		markdown.appendMarkdown(`- Cache Write: \`${formatTokens(event.tokenUsage.cacheWriteTokens)}\`\n`);
+	}
+	if (event.tokenUsage.cacheReadTokens !== undefined) {
+		markdown.appendMarkdown(`- Cache Read: \`${formatTokens(event.tokenUsage.cacheReadTokens)}\`\n`);
+	}
+	
+	const status = event.kind.includes('INCLUDED') ? '✅ INCLUDED' : '💰 CHARGED';
+	markdown.appendMarkdown(`\n**Status:** ${status}`);
+	
+	return markdown;
 }
 
 /**
@@ -63,6 +154,10 @@ function updateStatusBar(used: number, limit: number): void {
 	const statusBar = createStatusBarItem();
 	const percentage = limit > 0 ? ((used / limit) * 100).toFixed(1) : '0.0';
 	statusBar.text = `Cursor Meter: ${used}/${limit} (${percentage}%)`;
+	
+	// Use cached event if available, otherwise show placeholder
+	statusBar.tooltip = createUsageTooltip(cachedLastEvent);
+	
 	statusBar.show();
 }
 
@@ -135,6 +230,33 @@ function debouncedRefresh(context: vscode.ExtensionContext): void {
 }
 
 /**
+ * Formats a timestamp to a readable date/time string
+ */
+function formatTimestamp(timestamp: string): string {
+	const date = new Date(parseInt(timestamp));
+	return date.toLocaleString();
+}
+
+/**
+ * Formats cents to dollars
+ */
+function formatCents(cents: number): string {
+	return `$${(cents / 100).toFixed(4)}`;
+}
+
+/**
+ * Formats token count with commas
+ */
+function formatTokens(tokens: number | undefined): string {
+	if (tokens === undefined) {
+		return '0';
+	}
+	return tokens.toLocaleString();
+}
+
+
+
+/**
  * This method is called when your extension is activated
  */
 export async function activate(context: vscode.ExtensionContext) {
@@ -145,8 +267,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		createStatusBarItem();
 
 		// Register refresh command
-		const refreshCommand = vscode.commands.registerCommand('cursor-meter.refresh', () => {
-			refreshUsage(context);
+		const refreshCommand = vscode.commands.registerCommand('cursor-meter.refresh', async () => {
+			await refreshUsage(context);
+			// Also refresh the last event when manually refreshing
+			await fetchLastEvent(context, true);
 		});
 
 		// Register command to set/change token
@@ -161,12 +285,19 @@ export async function activate(context: vscode.ExtensionContext) {
 		// Listen for document changes (indicates AI completion or edits)
 		const documentChangeListener = vscode.workspace.onDidChangeTextDocument(() => {
 			debouncedRefresh(context);
+			// Fetch last event after a Cursor request (debounced to avoid too many requests)
+			// Wait 3 seconds after edit to allow the usage to be recorded
+			setTimeout(() => {
+				fetchLastEvent(context, true); // Force fetch after actual Cursor request
+			}, 3000);
 		});
 
 		// Listen for when documents are saved (another indicator of completion)
 		const documentSaveListener = vscode.workspace.onDidSaveTextDocument(() => {
 			// Refresh immediately on save (no debounce needed)
 			refreshUsage(context);
+			// Fetch last event after save (actual Cursor request)
+			fetchLastEvent(context, true);
 		});
 
 		context.subscriptions.push(

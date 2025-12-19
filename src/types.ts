@@ -35,3 +35,33 @@ export interface UsageSummaryResponse {
 	teamUsage: Record<string, unknown>;
 }
 
+/**
+ * Usage event from /api/dashboard/get-filtered-usage-events endpoint
+ */
+export interface UsageEvent {
+	timestamp: string;
+	model: string;
+	kind: string;
+	requestsCosts: number;
+	usageBasedCosts: string | number;
+	isTokenBasedCall: boolean;
+	tokenUsage: {
+		inputTokens?: number;
+		outputTokens?: number;
+		cacheWriteTokens?: number;
+		cacheReadTokens?: number;
+		totalCents: number;
+	};
+	owningUser: string;
+	cursorTokenFee: number;
+	isChargeable: boolean;
+}
+
+/**
+ * Response from /api/dashboard/get-filtered-usage-events endpoint
+ */
+export interface UsageEventsResponse {
+	totalUsageEventsCount: number;
+	usageEventsDisplay: UsageEvent[];
+}
+
